@@ -79,7 +79,6 @@ def fused_conv2d_maxpool(X, W, bias, pool_size=1):
     for out_t in nl.affine_range(c_out_tiles):
         out_t_start = out_t * TILE_SIZE
         out_t_end = (out_t + 1) * TILE_SIZE
-        bias_tile = bias_buf[:, out_t]
 
 
         W_packed = nl.ndarray(
@@ -115,9 +114,8 @@ def fused_conv2d_maxpool(X, W, bias, pool_size=1):
                 accum = nl.zeros((TILE_SIZE, out_width), dtype=nl.float32,buffer=nl.psum)
 
                 for p in nl.sequential_range(pool_size):
-
                     row = p_row * pool_size + p
-                    nisa.tensor_scalar(accum, nl.multiply, 0.0, dtype=nl.float32)
+                    accum[:] = nisa.tensor_scalar(accum, nl.multiply, 0.0, dtype=nl.float32)
 
                     for i in nl.sequential_range(filter_height):
                         for in_t in nl.sequential_range(c_in_tiles):
@@ -135,14 +133,13 @@ def fused_conv2d_maxpool(X, W, bias, pool_size=1):
                     if p == 0:
                         rows_buffer[:] = accum
                     else:
-                        rows_buffer[:] = nisa.tensor_tensor(rows_buffer, accum, nl.maximum)
-
+                        rows_buffer[:] =  nl.maximum(rows_buffer, accum)
+                bias_tile = bias_buf[:, out_t]
                 rows_buffer[:] = nisa.tensor_scalar(rows_buffer, nl.add, bias_tile)
 
                 if pool_size > 1:
                     rows_pooled = rows_buffer.reshape((TILE_SIZE, out_pool_width, pool_size))
                     cols_pooled = nl.max(rows_pooled, axis=2)  # Shape: (TILE_SIZE, out_pool_width)
-                    print(cols_pooled.shape)
                     nl.store( X_out[b, out_t_start:out_t_end, p_row, :],value= cols_pooled)
                 else:
                     nl.store( X_out[b, out_t_start:out_t_end, p_row, :],value=rows_buffer)

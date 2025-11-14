@@ -80,7 +80,6 @@ def fused_conv2d_maxpool(X, W, bias, pool_size=1):
         out_t_start = out_t * TILE_SIZE
         out_t_end = (out_t + 1) * TILE_SIZE
 
-
         W_packed = nl.ndarray(
             shape=(TILE_SIZE, filter_height, filter_width, c_out_tiles, c_in_tiles, TILE_SIZE),
             dtype=W.dtype,
@@ -99,7 +98,7 @@ def fused_conv2d_maxpool(X, W, bias, pool_size=1):
 
                     w_src = w_big[:,in_t_start:in_t_end,i,j]
                     w_trn = nisa.nc_transpose(w_src, engine=nisa.vector_engine)
-                    nisa.dma_copy(src=w_trn, dst=W_packed[:, i, j, out_t, in_t, :])
+                    W_packed[:, i, j, out_t, in_t, :] = w_trn
 
 
         #main comp
@@ -107,7 +106,7 @@ def fused_conv2d_maxpool(X, W, bias, pool_size=1):
 
             for p_row in nl.affine_range(out_pool_height):
 
-                rows_buffer = nl.ndarray((TILE_SIZE, out_width), dtype=nl.float32, buffer=nl.sbuf)
+                rows_buffer = nl.ndarray((TILE_SIZE, out_width), dtype=nl.float32, buffer=nl.psum)
 
                 x_big = nl.ndarray(shape=(TILE_SIZE, input_width), dtype=X.dtype, buffer=nl.sbuf)
 
@@ -115,7 +114,8 @@ def fused_conv2d_maxpool(X, W, bias, pool_size=1):
 
                 for p in nl.sequential_range(pool_size):
                     row = p_row * pool_size + p
-                    accum[:] = nisa.tensor_scalar(accum, nl.multiply, 0.0, dtype=nl.float32)
+                    if p > 0:
+                        accum[:] = nisa.tensor_scalar(accum, nl.multiply, 0.0, dtype=nl.float32)
 
                     for i in nl.sequential_range(filter_height):
                         for in_t in nl.sequential_range(c_in_tiles):
@@ -133,7 +133,9 @@ def fused_conv2d_maxpool(X, W, bias, pool_size=1):
                     if p == 0:
                         rows_buffer[:] = accum
                     else:
-                        rows_buffer[:] =  nl.maximum(rows_buffer, accum)
+                        temp_accum = nisa.tensor_copy(accum)
+                        rows_buffer[:] = nl.maximum(rows_buffer, temp_accum)
+
                 bias_tile = bias_buf[:, out_t]
                 rows_buffer[:] = nisa.tensor_scalar(rows_buffer, nl.add, bias_tile)
 
